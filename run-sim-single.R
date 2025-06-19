@@ -1,19 +1,22 @@
+source("gen-data-single.R")
+source("gen-sim-multiple.R")
+
 # ── 0. prerequisites ─────────────────────────────────────────────────────
 library(brms)
 library(tibble)
 library(tidyverse)
 
 # ── 1. user‐specified parameters ─────────────────────────────────────────
-runs         <- 5
-n_per_group  <- 550
+runs         <- 100
+n_per_group  <- 400
 p_control    <- 0.35
 p_treatment  <- 0.27
 
 # prior hyper-parameters: each = c(mean, sd)
 intercept_prior <- c(0, 5)
-SOFA_prior      <- c(0, 1)
-CRS_PBW_prior   <- c(0, 1)
-trt_prior       <- c(0, 1)
+SOFA_prior      <- c(0, 2.5)
+CRS_PBW_prior   <- c(0, 2.5)
+trt_prior       <- c(0, 2.5)
 
 # OR thresholds and posterior-prob cutoffs
 or_thresholds   <- c(1, 0.8)
@@ -23,7 +26,7 @@ prob_thresholds <- c(0.8, 0.9, 0.95)
 iter   <- 2000
 warmup <- 500
 chains <- 4
-seed   <- 2025
+seed   <- 76
 
 # ── 2. build brms prior list ─────────────────────────────────────────────
 priors <- c(
@@ -44,26 +47,39 @@ sim_list <- simulate_trials(
   return_list = TRUE
 )
 
+compiled_fit <- brm(
+  formula = outcome ~ SOFA + CRS_PBW + group,
+  data    = sim_list[[1]],
+  family  = bernoulli(),
+  prior   = priors,
+  iter    = 2,           # minimal valid sampling
+  warmup  = 1,
+  chains  = 1,
+  seed    = 999,
+  refresh = 0
+)
+
+# Save the compiled model
+saveRDS(compiled_fit, file = "cached_model.rds")
+
 # ── 4. analyze each dataset with brms ────────────────────────────────────
 # Initialize empty list to store results
 results_list <- vector("list", length = runs)
+compiled_fit <- readRDS("cached_model.rds") 
 
 for (i in seq_len(runs)) {
   dat <- sim_list[[i]]
   
   # Fit the Bayesian logistic regression
-  fit <- brm(
-    formula = outcome ~ SOFA + CRS_PBW + group,
-    data    = dat,
-    family  = bernoulli(),
-    prior   = priors,
-    iter    = iter,
-    warmup  = warmup,
-    chains  = chains,
-    seed    = seed + i,
+  fit <- update(
+    object = compiled_fit,
+    newdata = dat,
+    seed = seed + i,
+    iter = iter,
+    warmup = warmup,
+    chains = chains,
     refresh = 0,
-    file    = "cached_model",
-    file_refit = "always"
+    recompile = FALSE
   )
   
   # Extract posterior draws
@@ -71,9 +87,9 @@ for (i in seq_len(runs)) {
   
   # Key posterior summaries
   p_lt_0     <- mean(post$b_groupTreatment < 0)
-  p_lt_0.2   <- mean(post$b_groupTreatment > -0.2)
+  p_lt_0.2   <- mean(post$b_groupTreatment < -0.2)
   p_lt_0.5   <- mean(post$b_groupTreatment < -0.5)
-  p_gt_0.1 <- mean(post$b_groupTreatment < 0.1)
+  p_gt_0.1 <- mean(post$b_groupTreatment > 0.1)
   
   est <- posterior_summary(fit, pars = "b_groupTreatment")
   mean_effect <- est[, "Estimate"]
